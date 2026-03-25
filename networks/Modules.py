@@ -13,41 +13,69 @@ class GradientModule(nn.Module):
         self.sqrt_w = torch.sqrt(self.weights)
         self.sqrt_w_inv = 1.0 / self.sqrt_w
 
-    def forward(self, U, V, y):
+    # def forward(self, U, V, y):
+    #     """
+    #     U: [B, M, r]
+    #     V: [B, N, r]
+    #     y: [B, M+N-1], one-bit observation vector (±1)
+    #     """
+    #     # B = U.shape[0]
+    #     X = torch.bmm(U, torch.conj(V).transpose(1, 2))  # [B, M, N]
+
+    #     # Step 1: G^* X = D^{-1} H^* X
+    #     Gadj_X = self.G_adjoint(X, self.sqrt_w_inv.to(X.device))  # [B, M+N-1]
+
+    #     # Step 2: w = Re( y.conj ⊙ D^{-1} G^* X )
+    #     w = (y.conj() * self.sqrt_w_inv.to(X.device)[None, :] * Gadj_X).real  # [B, M+N-1]
+
+    #     # Step 3: g(w) 
+    #     gw = self.squareplus_function(w,b=0.01)  # [B, M+N-1]
+
+    #     # Step 4: g'(w) 
+    #     gw_der = self.squareplus_derivative(w,b=0.01) # [B, M+N-1]
+
+    #     # Step 4: g(w) ⊙ g'(w) ⊙ y
+    #     gw2_y = gw * gw_der * y  # [B, M+N-1]
+
+    #     # Step 5: 𝓖(gw2_y) = G(D^{-1} * gw2_y)
+    #     G_gw2_y = self.hankel_lifting(gw2_y * self.sqrt_w_inv.to(X.device) * self.sqrt_w_inv.to(X.device))  # [B, M, N]
+    #     GGadj_X = self.hankel_lifting(Gadj_X* self.sqrt_w_inv.to(X.device))
+
+    #     # grad_U
+    #     U_grad = torch.bmm(G_gw2_y, V) + self.lambda_reg * (torch.bmm(X,V) - torch.bmm(GGadj_X,V))
+
+    #     # grad_V
+    #     V_grad = torch.bmm(torch.conj(G_gw2_y).transpose(1, 2), U) + self.lambda_reg * (torch.bmm(torch.conj(X).transpose(1, 2),U) - torch.bmm(torch.conj(GGadj_X).transpose(1, 2), U))
+
+    #     return U_grad, V_grad
+    def forward(self, U, y): # 删掉 V
         """
-        U: [B, M, r]
-        V: [B, N, r]
+        U: [B, M, r]  # 此时 M 必须等于 N
         y: [B, M+N-1], one-bit observation vector (±1)
         """
-        # B = U.shape[0]
-        X = torch.bmm(U, torch.conj(V).transpose(1, 2))  # [B, M, N]
+        # Step 0: 对称 Hankel 矩阵分解 X = U U^T 
+        # 注意论文 Eq(13) 是 U U^T，不是 U U^H。
+        # 如果涉及复数，U^T 是 torch.transpose(U, 1, 2)
+        X = torch.bmm(U, U.transpose(1, 2))  # [B, M, M]
 
-        # Step 1: G^* X = D^{-1} H^* X
-        Gadj_X = self.G_adjoint(X, self.sqrt_w_inv.to(X.device))  # [B, M+N-1]
+        # Step 1 & 2 & 3 保持不变...
+        Gadj_X = self.G_adjoint(X, self.sqrt_w_inv.to(X.device))
+        w = (y.conj() * self.sqrt_w_inv.to(X.device)[None, :] * Gadj_X).real
+        gw = self.squareplus_function(w, b=0.01)
+        gw_der = self.squareplus_derivative(w, b=0.01)
+        gw2_y = gw * gw_der * y
 
-        # Step 2: w = Re( y.conj ⊙ D^{-1} G^* X )
-        w = (y.conj() * self.sqrt_w_inv.to(X.device)[None, :] * Gadj_X).real  # [B, M+N-1]
+        # Step 5 保持不变...
+        G_gw2_y = self.hankel_lifting(gw2_y * self.sqrt_w_inv.to(X.device) * self.sqrt_w_inv.to(X.device))
+        GGadj_X = self.hankel_lifting(Gadj_X * self.sqrt_w_inv.to(X.device))
 
-        # Step 3: g(w) 
-        gw = self.squareplus_function(w,b=0.01)  # [B, M+N-1]
+        # 根据论文 Eq (39) 和 Eq (41)，梯度应乘以 U 的共轭 (U.conj())
+        U_conj = torch.conj(U)
+        
+        # grad_U = ∇f_2(U) + γ∇g(U)
+        U_grad = torch.bmm(G_gw2_y, U_conj) + self.lambda_reg * (torch.bmm(X, U_conj) - torch.bmm(GGadj_X, U_conj))
 
-        # Step 4: g'(w) 
-        gw_der = self.squareplus_derivative(w,b=0.01) # [B, M+N-1]
-
-        # Step 4: g(w) ⊙ g'(w) ⊙ y
-        gw2_y = gw * gw_der * y  # [B, M+N-1]
-
-        # Step 5: 𝓖(gw2_y) = G(D^{-1} * gw2_y)
-        G_gw2_y = self.hankel_lifting(gw2_y * self.sqrt_w_inv.to(X.device) * self.sqrt_w_inv.to(X.device))  # [B, M, N]
-        GGadj_X = self.hankel_lifting(Gadj_X* self.sqrt_w_inv.to(X.device))
-
-        # grad_U
-        U_grad = torch.bmm(G_gw2_y, V) + self.lambda_reg * (torch.bmm(X,V) - torch.bmm(GGadj_X,V))
-
-        # grad_V
-        V_grad = torch.bmm(torch.conj(G_gw2_y).transpose(1, 2), U) + self.lambda_reg * (torch.bmm(torch.conj(X).transpose(1, 2),U) - torch.bmm(torch.conj(GGadj_X).transpose(1, 2), U))
-
-        return U_grad, V_grad
+        return U_grad
 
     def hankel_lifting(self, x):
         # x: [B, M+N-1] → H(x): [B, M, N]
@@ -113,16 +141,16 @@ class ConstraintModule(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 2*M*rank)
         )
-        self.resnet_W = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(2*N*rank, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 2*N*rank)
-        )
+        # self.resnet_W = nn.Sequential(
+        #     nn.Flatten(),
+        #     nn.Linear(2*N*rank, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim, 2*N*rank)
+        # )
 
-    def forward(self, Z, W):
+    def forward(self, Z ):
         Zreal = Z.real.to(torch.float32)
         Zimag = Z.imag.to(torch.float32)
         Zcombine = torch.cat([Zreal, Zimag], dim=1) # [B, M * 2r]
@@ -133,14 +161,15 @@ class ConstraintModule(nn.Module):
         Zdelta = torch.complex(Zreal_res, Zimag_res)
         Z_corr = Z + Zdelta.view(-1, self.M, self.rank)
 
-        Wreal = W.real.to(torch.float32)
-        Wimag = W.imag.to(torch.float32)
-        Wcombine = torch.cat([Wreal, Wimag], dim=-1)
-        res_W = self.resnet_W(Wcombine)
-        Wreal_res,Wimag_res = res_W.chunk(2, dim=-1)
-        Wdelta = torch.complex(Wreal_res, Wimag_res)
-        W_corr = W + Wdelta.view(-1, self.N, self.rank)
+        # Wreal = W.real.to(torch.float32)
+        # Wimag = W.imag.to(torch.float32)
+        # Wcombine = torch.cat([Wreal, Wimag], dim=-1)
+        # res_W = self.resnet_W(Wcombine)
+        # Wreal_res,Wimag_res = res_W.chunk(2, dim=-1)
+        # Wdelta = torch.complex(Wreal_res, Wimag_res)
+        # W_corr = W + Wdelta.view(-1, self.N, self.rank)
 
-        return Z_corr, W_corr
+        # return Z_corr, W_corr
+        return Z_corr
 
 
