@@ -1,4 +1,4 @@
-﻿
+
 import numpy as np
 import torch
 from typing import Tuple
@@ -127,7 +127,7 @@ def spectral_init(x: torch.Tensor, L: int, r: int):
     """
     谱初始化:
       1) 先对每个样本的 Hankel 矩阵按 Frobenius 范数归一化
-      2) 再做 SVD，并用前 r 个奇异值/向量构造 U、V 作为初始化
+      2) 再做 SVD，并用前 r 个奇异值/向量构造 U 作为初始化
 
     参数:
         x:  输入一维信号, 形状 [B, N]
@@ -135,8 +135,8 @@ def spectral_init(x: torch.Tensor, L: int, r: int):
         r:  目标秩 / 源数
 
     返回:
-        (U, V): Hankel 低秩分解的谱初始化因子, 形状分别为
-                U: [B, L, r], V: [B, K, r], 其中 K = N - L + 1
+        U: Hankel 低秩分解的谱初始化因子, 形状 [B, L, r]
+        [Modified] Removed V for U*U^T symmetry
     """
     B, N = x.shape
     K = N - L + 1
@@ -151,16 +151,15 @@ def spectral_init(x: torch.Tensor, L: int, r: int):
     # 对归一化后的 Hankel 做 SVD
     U, S, Vh = torch.linalg.svd(H_scaled, full_matrices=False)  # [B, L, K] batched SVD
 
-    # 取前 r 个奇异值/向量，并用 sqrt(S) 吸收到 U / V 中
+    # 取前 r 个奇异值/向量，并用 sqrt(S) 吸收到 U 中
     Sr = torch.sqrt(S[:, :r]).unsqueeze(1)  # [B, 1, r]
     U_r = U[:, :, :r] * Sr                   # [B, L, r]
-    V_r = Vh.transpose(-2, -1)[:, :, :r] * Sr  # [B, K, r]
+    # [Modified] Removed V_r generation for U*U^T symmetry
 
-    # 最后再对 U、V 分别做 Frobenius 归一化，避免尺度过大
+    # 最后再对 U 做 Frobenius 归一化，避免尺度过大
     U_norm = U_r / (U_r.norm(dim=(1, 2), keepdim=True) + 1e-8)
-    V_norm = V_r / (V_r.norm(dim=(1, 2), keepdim=True) + 1e-8)
 
-    return U_norm, V_norm
+    return U_norm
 
 def hankel_lifting(x, M, N):
     """

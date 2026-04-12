@@ -9,7 +9,7 @@ import numpy as np
 from utils.misc import hankel_lifting,Dinv_G_adjoint,MatPencilMethod_Batch,MatPencilMethod
 from torch.utils.data import TensorDataset, DataLoader
 import argparse
-#?
+
 class SpectralDeepUnfolding(nn.Module):
     def __init__(self, M, N, rank, K=10, lambda_reg=0.01):
         super().__init__()
@@ -26,21 +26,23 @@ class SpectralDeepUnfolding(nn.Module):
         self.etas = nn.ParameterList([
             nn.Parameter(torch.tensor(0.001)) for _ in range(K)
         ])
-#改动初始步长为0.001
-    def forward(self, Z, W, Y):
+
+    def forward(self, Z, Y):
         """
-        Z, W: Factor matrices (U, V), shapes [B, M, r], [B, N, r]
+        [Modified] Z: Factor matrix (U), shape [B, M, r]. Removed W.
         Y: One-bit observation matrix, shape [B, M, N]
         """
         for k in range(self.K):
-            grad_Z, grad_W = self.grad_modules[k](Z, W, Y)
+            # [Modified] Only update Z (U)
+            grad_Z = self.grad_modules[k](Z, Y)
             eta = self.etas[k]
 
             Z_half = Z - eta * grad_Z
-            W_half = W - eta * grad_W
-            Z, W = self.constraint_modules[k](Z_half, W_half)
+            Z = self.constraint_modules[k](Z_half)
 
-        X_hat = torch.bmm(Z, torch.conj(W).transpose(1, 2))  # Reconstruct low-rank matrix estimate
+        # [Modified] Reconstruct complex symmetric matrix: H = Z * Z^T
+        # Absolutely NO .conj() here as per Takagi decomposition requirement.
+        X_hat = torch.bmm(Z, Z.transpose(1, 2))
         return X_hat
 
 def spectral_loss(H_hat, Y, H_target, args, lambda_reg=1.0):
@@ -78,13 +80,14 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
     
     for epoch in range(args.num_epochs):
         model.train()
-        for batch_idx, (Z, W, Y, H_target, F_true, A_true) in enumerate(train_loader):
-            Z, W, Y, H_target = Z.to(device), W.to(device), Y.to(device), H_target.to(device)
+        for batch_idx, (Z, Y, H_target, F_true, A_true) in enumerate(train_loader):
+            # [Modified] Removed W (V)
+            Z, Y, H_target = Z.to(device), Y.to(device), H_target.to(device)
             F_true, A_true = F_true.to(device), A_true.to(device)
             optimizer.zero_grad()
             
             # Forward pass
-            H_hat = model(Z, W, Y)
+            H_hat = model(Z, Y)
             
             # Compute loss
             loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
@@ -105,14 +108,14 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
             num_total = 0
             success_deg = 3.0  # 判定成功的角度阈值（度）
             with torch.no_grad():
-                for batch_idx, (Z_t, W_t, Y_t, H_target_t) in enumerate(test_loader):
+                for batch_idx, (Z_t, Y_t, H_target_t) in enumerate(test_loader):
+                    # [Modified] Removed W_t (V_t)
                     Z_t = Z_t.to(device)
-                    W_t = W_t.to(device)
                     Y_t = Y_t.to(device)
                     H_target_t = H_target_t.to(device)
 
                     # Forward on test batch
-                    H_hat_t = model(Z_t, W_t, Y_t)
+                    H_hat_t = model(Z_t, Y_t)
                     X_hat_t = Dinv_G_adjoint(H_hat_t)
                     A_hat_t, F_hat_t = MatPencilMethod_Batch(X_hat_t, args.rank, args.matrix_row)
 
@@ -190,15 +193,15 @@ def test_model(model, test_loader, F_true, args):
 
     total_loss = 0
     with torch.no_grad():  # Disable gradients
-        for batch_idx, (Z, W, Y, H_target) in enumerate(test_loader):
-            Z, W, Y, H_target = Z.to(device), W.to(device), Y.to(device), H_target.to(device)
+        for batch_idx, (Z, Y, H_target) in enumerate(test_loader):
+            # [Modified] Removed W (V)
+            Z, Y, H_target = Z.to(device), Y.to(device), H_target.to(device)
 
             # Forward pass
-            H_hat = model(Z, W, Y)
+            H_hat = model(Z, Y)
             X_hat = Dinv_G_adjoint(H_hat)
             A_hat, F_hat = MatPencilMethod_Batch(X_hat, args.rank, args.matrix_row)
-            # X_true_e = Dinv_G_adjoint(H_target)
-            # _, F_true_e = MatPencilMethod_Batch(X_true_e, 3, 32)
+
             # Compute loss
             loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
             total_loss += loss.item()
@@ -268,10 +271,6 @@ if __name__ == "__main__":
     # Build model
     model = SpectralDeepUnfolding(M=matrix_row, N=signal_dim+1-matrix_row, K=num_layers,rank=rank)
     
-    # xs, x_true, freqs, amps = generate_signal_1D(nd=signal_dim, r=rank, separation=True, damp=False,snr=20, random_state=42)
-    # _, F_true_e = MatPencilMethod(x_true, rank, matrix_row)
-    # freqs = np.sort(freqs)  # Sort frequencies
-    # # xs_bit = np.sign(xs.real) + 1j * np.sign(xs.imag)
     # Generate training data
     Dict_train = generate_signal_batch(batch_size=num_samples, nd=signal_dim, r=rank,
                                        separation=True, damp=False, snr=20, random_seed=None)
@@ -281,30 +280,31 @@ if __name__ == "__main__":
     A_true_train = torch.from_numpy(Dict_train['amps'])
     H_target_train = hankel_lifting(X_true_train, M=matrix_row, N=signal_dim + 1 - matrix_row)
     Y_input_train = torch.sign(X_noisy_train.real) + 1j * torch.sign(X_noisy_train.imag)
-    U_input_train, V_input_train = spectral_init(Y_input_train, L=matrix_row, r=rank)
     
-    # Build training DataLoader
-    dataset_train = TensorDataset(U_input_train, V_input_train,
+    # [Modified] Only initialize U (Z)
+    U_input_train = spectral_init(Y_input_train, L=matrix_row, r=rank)
+    
+    # [Modified] Updated dataset_train to remove V (W)
+    dataset_train = TensorDataset(U_input_train,
                                   Y_input_train, H_target_train,
                                   F_true_train, A_true_train)
     train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True)
 
     # Generate test data
     Dict_test= generate_signal_batch(batch_size=args.batch_size, nd=signal_dim, r=rank,
-                                     separation='True', damp=False, snr='noiseless', random_seed=42)  #改动
+                                     separation='True', damp=False, snr='noiseless', random_seed=42)
     X_noisy_test = torch.from_numpy(Dict_test['observed'])
     X_true_test = torch.from_numpy(Dict_test['clean'])
     F_true_test = torch.from_numpy(Dict_test['freqs'])
     A_true_test = torch.from_numpy(Dict_test['amps'])
     H_target_test = hankel_lifting(X_true_test, M=matrix_row, N=signal_dim + 1 - matrix_row)
     Y_input_test = torch.sign(X_noisy_test.real) + 1j * torch.sign(X_noisy_test.imag)
-    U_input_test, V_input_test = spectral_init(Y_input_test, L=matrix_row, r=rank)
+    
+    # [Modified] Only initialize U (Z)
+    U_input_test = spectral_init(Y_input_test, L=matrix_row, r=rank)
 
-    # X_true_e = Dinv_G_adjoint(H_target_test)
-    # _, F_true_e = MatPencilMethod_Batch(X_true_e, rank, matrix_row)
-
-    # Build test DataLoader
-    dataset_test = TensorDataset(U_input_test, V_input_test, Y_input_test, H_target_test)
+    # [Modified] Updated dataset_test to remove V (W)
+    dataset_test = TensorDataset(U_input_test, Y_input_test, H_target_test)
     test_loader = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False)
 
     # Train model with periodic evaluation on test data

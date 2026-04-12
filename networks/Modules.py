@@ -13,14 +13,15 @@ class GradientModule(nn.Module):
         self.sqrt_w = torch.sqrt(self.weights)
         self.sqrt_w_inv = 1.0 / self.sqrt_w
 
-    def forward(self, U, V, y):
+    def forward(self, U, y):
         """
+        [Modified] Removed V for U*U^T symmetry
         U: [B, M, r]
-        V: [B, N, r]
         y: [B, M+N-1], one-bit observation vector (±1)
         """
         # B = U.shape[0]
-        X = torch.bmm(U, torch.conj(V).transpose(1, 2))  # [B, M, N]
+        # [Modified] X = U * U^T (Complex Symmetric Decomposition)
+        X = torch.bmm(U, U.transpose(1, 2))  # [B, M, N]
 
         # Step 1: G^* X = D^{-1} H^* X
         Gadj_X = self.G_adjoint(X, self.sqrt_w_inv.to(X.device))  # [B, M+N-1]
@@ -41,13 +42,14 @@ class GradientModule(nn.Module):
         G_gw2_y = self.hankel_lifting(gw2_y * self.sqrt_w_inv.to(X.device) * self.sqrt_w_inv.to(X.device))  # [B, M, N]
         GGadj_X = self.hankel_lifting(Gadj_X* self.sqrt_w_inv.to(X.device))
 
-        # grad_U
-        U_grad = torch.bmm(G_gw2_y, V) + self.lambda_reg * (torch.bmm(X,V) - torch.bmm(GGadj_X,V))
+        # [Modified] grad_U calculation for H = U * U^T
+        # Using chain rule: grad_U = 2 * (grad_X) * conj(U)
+        # Note: G_gw2_y and (X - GGadj_X) are symmetric
+        U_conj = torch.conj(U)
+        U_grad = 2.0 * (torch.bmm(G_gw2_y, U_conj) + self.lambda_reg * (torch.bmm(X, U_conj) - torch.bmm(GGadj_X, U_conj)))
 
-        # grad_V
-        V_grad = torch.bmm(torch.conj(G_gw2_y).transpose(1, 2), U) + self.lambda_reg * (torch.bmm(torch.conj(X).transpose(1, 2),U) - torch.bmm(torch.conj(GGadj_X).transpose(1, 2), U))
-
-        return U_grad, V_grad
+        # [Modified] Removed V_grad
+        return U_grad
 
     def hankel_lifting(self, x):
         # x: [B, M+N-1] → H(x): [B, M, N]
@@ -113,16 +115,10 @@ class ConstraintModule(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 2*M*rank)
         )
-        self.resnet_W = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(2*N*rank, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 2*N*rank)
-        )
+        # [Modified] Removed resnet_W for U*U^T symmetry
 
-    def forward(self, Z, W):
+    def forward(self, Z):
+        # [Modified] Removed W for U*U^T symmetry
         Zreal = Z.real.to(torch.float32)
         Zimag = Z.imag.to(torch.float32)
         Zcombine = torch.cat([Zreal, Zimag], dim=1) # [B, M * 2r]
@@ -133,14 +129,6 @@ class ConstraintModule(nn.Module):
         Zdelta = torch.complex(Zreal_res, Zimag_res)
         Z_corr = Z + Zdelta.view(-1, self.M, self.rank)
 
-        Wreal = W.real.to(torch.float32)
-        Wimag = W.imag.to(torch.float32)
-        Wcombine = torch.cat([Wreal, Wimag], dim=-1)
-        res_W = self.resnet_W(Wcombine)
-        Wreal_res,Wimag_res = res_W.chunk(2, dim=-1)
-        Wdelta = torch.complex(Wreal_res, Wimag_res)
-        W_corr = W + Wdelta.view(-1, self.N, self.rank)
-
-        return Z_corr, W_corr
+        return Z_corr
 
 
