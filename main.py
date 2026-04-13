@@ -24,7 +24,7 @@ class SpectralDeepUnfolding(nn.Module):
 
         # Learnable step size eta_k (one per unrolled layer)
         self.etas = nn.ParameterList([
-            nn.Parameter(torch.tensor(0.001)) for _ in range(K)
+            nn.Parameter(torch.tensor(0.003)) for _ in range(K)
         ])
 
     def forward(self, Z, Y):
