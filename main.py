@@ -90,7 +90,7 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
             H_hat = model(Z, Y)
             
             # Compute loss
-            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
+            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=1)
             
             # Backward pass and parameter update
             loss.backward()
