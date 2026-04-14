@@ -24,7 +24,7 @@ class SpectralDeepUnfolding(nn.Module):
 
         # Learnable step size eta_k (one per unrolled layer)
         self.etas = nn.ParameterList([
-            nn.Parameter(torch.tensor(0.003)) for _ in range(K)
+            nn.Parameter(torch.tensor(0.0001)) for _ in range(K)
         ])
 
     def forward(self, Z, Y):
@@ -66,8 +66,13 @@ def spectral_loss(H_hat, Y, H_target, args, lambda_reg=1.0):
     
     # Penalize only sign-inconsistent entries (negative margin)
     neg_part = torch.nn.functional.relu(-combined)
-    consistency_loss = (torch.norm(neg_part, p=2, dim=1) ** 2).mean() / 2
-    structure_loss = (torch.norm(H_hat - H_target, p='fro', dim=(1, 2)) ** 2).mean() 
+    # consistency_loss = (torch.norm(neg_part, p=2, dim=1) ** 2).mean() / 2
+    # 训练出现了梯度突然爆炸nan的问题 怀疑是这一步先norm再平方导致的 也就是norm的导数出现了分母为0
+    consistency_loss = torch.sum(neg_part ** 2, dim=1).mean() / 2
+
+    # structure_loss = (torch.norm(H_hat - H_target, p='fro', dim=(1, 2)) ** 2).mean() 同上
+    diff = H_hat - H_target
+    structure_loss = torch.sum(diff.real ** 2 + diff.imag ** 2, dim=(1, 2)).mean()
     return consistency_loss + lambda_reg * structure_loss
 
 # Training loop
@@ -90,7 +95,7 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
             H_hat = model(Z, Y)
             
             # Compute loss
-            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
+            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=25)
             
             # Backward pass and parameter update
             loss.backward()
@@ -203,7 +208,7 @@ def test_model(model, test_loader, F_true, args):
             A_hat, F_hat = MatPencilMethod_Batch(X_hat, args.rank, args.matrix_row)
 
             # Compute loss
-            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
+            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=25)
             total_loss += loss.item()
             F_hat = F_hat.to(device)
             batch_start = batch_idx * F_hat.shape[0]
