@@ -77,9 +77,21 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     F_true_test = F_true_test.to(device)
     A_true_test = A_true_test.to(device)
+
+    with open("shuju.txt", "a", encoding="utf-8") as f:
+        f.write("=" * 60 + "\n")
+        f.write(
+            f"num_samples={args.num_samples}  num_layers={args.num_layers}  "
+            f"num_epochs={args.num_epochs}  lr={args.lr}  batch_size={args.batch_size}  "
+            f"signal_dim={args.signal_dim}  rank={args.rank}  "
+            f"loss_lambda={args.loss_lambda}  grad_clip={args.grad_clip}\n"
+        )
+        f.write("Epoch\tTrainLoss\tFreq_MAE\tSR\tRMSE_suc(deg)\tRMSE_all(deg)\n")
     
     for epoch in range(args.num_epochs):
         model.train()
+        epoch_loss_sum = 0.0
+        epoch_loss_count = 0
         for batch_idx, (Z, Y, H_target, F_true, A_true) in enumerate(train_loader):
             # [Modified] Removed W (V)
             Z, Y, H_target = Z.to(device), Y.to(device), H_target.to(device)
@@ -90,14 +102,29 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
             H_hat = model(Z, Y)
             
             # Compute loss
-            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
+            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=args.loss_lambda)
+            loss_value = loss.item()
+            if not torch.isfinite(loss):
+                print(f"Non-finite loss at Epoch: {epoch+1}, Batch: {batch_idx}, Loss: {loss_value}")
+                with open("shuju.txt", "a", encoding="utf-8") as f:
+                    f.write(f"{epoch+1}\t{loss_value}\tnan\tnan\tnan\tnan\n")
+                return model
             
             # Backward pass and parameter update
             loss.backward()
+            if args.grad_clip > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
+                if not torch.isfinite(grad_norm):
+                    print(f"Non-finite grad norm at Epoch: {epoch+1}, Batch: {batch_idx}, GradNorm: {grad_norm.item()}")
+                    with open("shuju.txt", "a", encoding="utf-8") as f:
+                        f.write(f"{epoch+1}\t{loss_value}\tnan\tnan\tnan\tnan\n")
+                    return model
             optimizer.step()
+            epoch_loss_sum += loss_value
+            epoch_loss_count += 1
             
             if batch_idx % 5 == 0:
-                print(f'Epoch: {epoch+1}, Batch: {batch_idx}, Loss: {loss.item():.4f}')
+                print(f'Epoch: {epoch+1}, Batch: {batch_idx}, Loss: {loss_value:.4f}')
 
         # 每 10 轮在 test 数据上评估一次频率 / 角度误差和成功率
         if (epoch + 1) % 10 == 0:
@@ -117,7 +144,13 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
                     # Forward on test batch
                     H_hat_t = model(Z_t, Y_t)
                     X_hat_t = Dinv_G_adjoint(H_hat_t)
-                    A_hat_t, F_hat_t = MatPencilMethod_Batch(X_hat_t, args.rank, args.matrix_row)
+                    if not torch.isfinite(X_hat_t).all():
+                        continue
+                    try:
+                        A_hat_t, F_hat_t = MatPencilMethod_Batch(X_hat_t, args.rank, args.matrix_row)
+                    except RuntimeError as exc:
+                        print(f"Skip test batch {batch_idx}: MatPencilMethod failed: {exc}")
+                        continue
 
                     F_hat_t = F_hat_t.to(device)
 
@@ -183,6 +216,12 @@ def train_model(model, train_loader, test_loader, F_true_test, A_true_test, args
                 f"[Epoch {epoch+1}] Test Freq MAE={avg_freq_err:.4f}, "
                 f"SR={suc_rate:.3f}, RMSE_suc={rmse_suc:.3f} deg, RMSE_all={rmse_all:.3f} deg"
             )
+            avg_train_loss = epoch_loss_sum / epoch_loss_count if epoch_loss_count > 0 else float("nan")
+            with open("shuju.txt", "a", encoding="utf-8") as f:
+                f.write(
+                    f"{epoch+1}\t{avg_train_loss:.6f}\t{avg_freq_err:.6f}\t"
+                    f"{suc_rate:.6f}\t{rmse_suc:.6f}\t{rmse_all:.6f}\n"
+                )
     
     return model
 
@@ -192,6 +231,7 @@ def test_model(model, test_loader, F_true, args):
     model.eval()  # Set to evaluation mode
 
     total_loss = 0
+    total_batches = 0
     with torch.no_grad():  # Disable gradients
         for batch_idx, (Z, Y, H_target) in enumerate(test_loader):
             # [Modified] Removed W (V)
@@ -200,11 +240,19 @@ def test_model(model, test_loader, F_true, args):
             # Forward pass
             H_hat = model(Z, Y)
             X_hat = Dinv_G_adjoint(H_hat)
-            A_hat, F_hat = MatPencilMethod_Batch(X_hat, args.rank, args.matrix_row)
+            if not torch.isfinite(X_hat).all():
+                print(f"Test Batch {batch_idx}, skipped non-finite model output")
+                continue
+            try:
+                A_hat, F_hat = MatPencilMethod_Batch(X_hat, args.rank, args.matrix_row)
+            except RuntimeError as exc:
+                print(f"Test Batch {batch_idx}, skipped MatPencilMethod failure: {exc}")
+                continue
 
             # Compute loss
-            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=100)
+            loss = spectral_loss(H_hat, Y, H_target, args, lambda_reg=args.loss_lambda)
             total_loss += loss.item()
+            total_batches += 1
             F_hat = F_hat.to(device)
             batch_start = batch_idx * F_hat.shape[0]
             batch_end = batch_start + F_hat.shape[0]
@@ -220,7 +268,7 @@ def test_model(model, test_loader, F_true, args):
                 print(f"Test Batch {batch_idx}, Loss: {loss.item():.4f}")
                 print(f"Output shape: {H_hat.shape}")
                 
-    avg_loss = total_loss / len(test_loader)
+    avg_loss = total_loss / total_batches if total_batches > 0 else float("nan")
     print(f"\nAverage Test Loss: {avg_loss:.4f}")
     return avg_loss
 
@@ -247,6 +295,10 @@ if __name__ == "__main__":
                            help='Learning rate (default: 0.001)')
     train_group.add_argument('--batch_size', type=int, default=32,
                            help='Batch size (default: 32)')
+    train_group.add_argument('--loss_lambda', type=float, default=100.0,
+                           help='Weight for structure loss (default: 100.0)')
+    train_group.add_argument('--grad_clip', type=float, default=0.5,
+                           help='Max gradient norm; set <=0 to disable (default: 0.5)')
     
     # System parameters group
     system_group = parser.add_argument_group('System Parameters')
