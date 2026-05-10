@@ -12,13 +12,13 @@ NUM_LAYERS=10
 NUM_SAMPLES=5000
 NUM_EPOCHS=100
 BATCH_SIZE=128
-LR=3e-5
+LOSS_LAMBDA=0.1
 
-LOG_DIR=${LOG_DIR:-logs_lambda}
+LOG_DIR=${LOG_DIR:-logs_lr}
 MAX_JOBS=${MAX_JOBS:-1}
 
-LAMBDA_LIST_DEFAULT="0.1 0.5 1.0 5.0 10.0 50.0 100.0"
-read -r -a LAMBDAS <<< "${LAMBDA_LIST:-$LAMBDA_LIST_DEFAULT}"
+LR_LIST_DEFAULT="1e-4 3e-4 1e-3 3e-3 1e-2"
+read -r -a LRS <<< "${LR_LIST:-$LR_LIST_DEFAULT}"
 read -r -a GPUS <<< "${GPU_LIST:-0}"
 
 mkdir -p "${LOG_DIR}"
@@ -31,21 +31,21 @@ wait_for_slot() {
 
 job_idx=0
 
-for lam in "${LAMBDAS[@]}"; do
+for lr in "${LRS[@]}"; do
   wait_for_slot
 
   gpu_idx=$((job_idx % ${#GPUS[@]}))
   gpu=${GPUS[$gpu_idx]}
   job_idx=$((job_idx + 1))
 
-  exp_name="lambda${lam}_K${NUM_LAYERS}_n${NUM_SAMPLES}_ep${NUM_EPOCHS}_$(date +"%Y%m%d_%H%M%S")"
+  exp_name="lr${lr}_lambda${LOSS_LAMBDA}_K${NUM_LAYERS}_n${NUM_SAMPLES}_ep${NUM_EPOCHS}_$(date +"%Y%m%d_%H%M%S")"
   log_file="${LOG_DIR}/${exp_name}.log"
 
   {
     echo "[RUN] ${exp_name}"
     echo "[GPU] CUDA_VISIBLE_DEVICES=${gpu}"
     echo "[TIME] $(date +"%F %T")"
-    echo "[CMD] ${PYTHON_BIN} -u main.py --loss_lambda ${lam} --lr ${LR} --batch_size ${BATCH_SIZE} --num_layers ${NUM_LAYERS} --num_samples ${NUM_SAMPLES} --num_epochs ${NUM_EPOCHS}"
+    echo "[CMD] ${PYTHON_BIN} -u main.py --lr ${lr} --loss_lambda ${LOSS_LAMBDA} --batch_size ${BATCH_SIZE} --num_layers ${NUM_LAYERS} --num_samples ${NUM_SAMPLES} --num_epochs ${NUM_EPOCHS}"
 
     CUDA_VISIBLE_DEVICES="${gpu}" "${PYTHON_BIN}" -u main.py \
       --signal_dim "${SIGNAL_DIM}" \
@@ -53,9 +53,9 @@ for lam in "${LAMBDAS[@]}"; do
       --num_layers "${NUM_LAYERS}" \
       --num_samples "${NUM_SAMPLES}" \
       --num_epochs "${NUM_EPOCHS}" \
-      --lr "${LR}" \
+      --lr "${lr}" \
       --batch_size "${BATCH_SIZE}" \
-      --loss_lambda "${lam}" \
+      --loss_lambda "${LOSS_LAMBDA}" \
       --seed "${SEED}" \
       --device "${DEVICE}"
 
@@ -67,4 +67,4 @@ for lam in "${LAMBDAS[@]}"; do
 done
 
 wait
-echo "All lambda-sweep experiments finished."
+echo "All lr-sweep experiments finished."

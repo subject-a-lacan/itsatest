@@ -1,28 +1,36 @@
 # issues
 
-## 现象
+## 当前状态
 
-- 训练 loss 30 epoch 仅降 ~2-25%（300K → 225K~295K）
-- 成功率 0~0.016（128 样本中最多 2 个成功），测试数据为 noiseless
-- RMSE_all ~25-33°，几乎随机
+- 改法 2（去掉 spectral_init 最后一行归一化）已应用，效果无明显变化
+- n5000 lambda sweep 正在进行中（4 GPU 并行），目前仅跑到 epoch ~20
+- SR 仍然接近 0，RMSE_all ~26-30°
 
-## 问题
+## 待验证的改法
 
-1. **loss_lambda=100 过高** — 结构损失主导总损失，扼杀符号一致性学习。单比特无幅度信息，强约束 Hankel 范数匹配不合理。
-2. **lr=3e-5 太低** — 接近传统优化步长，不适合 Adam。损失刚进入下降通道训练就结束了。
-3. **epoch=30 太少** — 收敛远不充分。
-4. **K=5 层展开不足** — 论文传统迭代需 100 次，5 层可学习展开信息量不够。
-5. **b=0.01 偏大** — squareplus 平滑参数比论文 (0.001) 大 10 倍，光滑近似偏离真实梯度。
-6. **ConstraintModule 容量小** — 3 层 MLP (192→128→128→192) 学习 Hankel 结构约束能力有限。
-7. **训练/测试 SNR 不对齐** — 训练 20dB 噪声 vs 测试 noiseless，频率分布随机 vs 固定。
+### 改法 A：H_target 归一化（优先级更高）
 
-## 建议优先级
+**位置**：`main.py` 的 `spectral_loss` 函数
 
-| 优先级 | 改动 | 从 | 到 |
-|--------|------|----|----|
-| P0 | loss_lambda | 100 | 1.0 |
-| P0 | lr | 3e-5 | 1e-4 |
-| P0 | num_epochs | 30 | 200 |
-| P1 | b | 0.01 | 0.001 |
-| P1 | num_layers | 5 | 10 |
-| P2 | 测试频率 | random | fixed2 |
+**做法**：在计算 structure_loss 之前，把 `H_target` 按 Frobenius 范数归一化到大小=1：
+```python
+H_target_norm = H_target / (H_target.norm(p='fro', dim=(1,2), keepdim=True) + 1e-8)
+structure_loss = mean(||H_hat - H_target_norm||²_fro)
+```
+
+**理由**：当前 H_hat（由 one-bit 数据驱动）的尺度始终 ≈ 1，而 H_target（干净信号）的尺度 ≈ 55。structure_loss 的梯度大小由 `2*(H_hat - H_target)` 决定，尺度差 50 倍导致这个梯度完全由 H_target 的绝对值主导，而不是由 H_hat 和 H_target 之间的**结构差异**主导。归一化后两者尺度相同，structure_loss 才能真正比较 Hankel 矩阵的结构相似性而非幅度匹配。
+
+### 改法 B：b 从 0.01 改为 0.001
+
+**位置**：`networks/Modules.py` 第 33、36 行
+
+**做法**：`squareplus_function(w, b=0.001)` 和 `squareplus_derivative(w, b=0.001)`
+
+**理由**：b 控制 squareplus 平滑近似的精度。b=0.01 是论文值（0.001）的 10 倍，导致函数在零点附近过于平缓，降低了梯度对符号不一致条目的敏感度。改回 0.001 可以提高 sign consistency 梯度的信噪比约 3 倍。
+
+## 建议验证顺序
+
+1. 先单独测改法 A（改动最小，风险最低）
+2. 再单独测改法 B
+3. 两者一起测
+4. 每次用 `--num_samples 1000 --num_epochs 10` 快速验证 SR 是否有变化，确认有效后再跑完整实验

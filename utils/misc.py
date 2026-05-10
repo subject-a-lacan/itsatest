@@ -156,10 +156,7 @@ def spectral_init(x: torch.Tensor, L: int, r: int):
     U_r = U[:, :, :r] * Sr                   # [B, L, r]
     # [Modified] Removed V_r generation for U*U^T symmetry
 
-    # 最后再对 U 做 Frobenius 归一化，避免尺度过大
-    U_norm = U_r / (U_r.norm(dim=(1, 2), keepdim=True) + 1e-8)
-
-    return U_norm
+    return U_r
 
 def hankel_lifting(x, M, N):
     """
