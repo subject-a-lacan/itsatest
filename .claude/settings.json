@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(D:\\\\Anaconda\\\\Scripts\\\\conda.exe run -n Deeplearning python -c \"import torch; print\\('torch', torch.__version__\\); print\\('cuda available:', torch.cuda.is_available\\(\\)\\)\")",
+      "Bash(D:/Anaconda/Scripts/conda.exe run *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\19355\\\\AppData\\\\Local\\\\NVIDIA\\\\DXCache\" -Recurse)",
+      "Bash(Select-Object Name, Length, LastWriteTime)",
+      "Bash(Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\19355\\\\AppData\\\\Local\\\\NVIDIA\\\\DXCache\" -Recurse | Select-Object Name, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,2\\)}}, LastWriteTime | Format-Table -AutoSize)",
+      "PowerShell($files = Get-ChildItem -Path \"C:\\\\Users\\\\19355\\\\AppData\\\\Local\\\\NVIDIA\\\\DXCache\" -Recurse; $totalMB = [math]::Round\\(\\($files | Measure-Object -Property Length -Sum\\).Sum/1MB, 2\\); Write-Output \"Total files: $\\($files.Count\\)\"; Write-Output \"Total size: $totalMB MB\"; Write-Output \"\"; Write-Output \"Largest files:\"; $files | Sort-Object Length -Descending | Select-Object -First 10 | Format-Table Name, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,2\\)}}, LastWriteTime -AutoSize)"
+    ]
+  }
+}

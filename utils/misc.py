@@ -84,7 +84,7 @@ def MatPencilMethod(s, r, L):
 
     indexf2 = torch.argsort(torch.abs(fd))
     a_final = ad[indexf2]
-    f_final,_ = torch.sort(1 - fd[indexf2])
+    f_final,_ = torch.sort(fd[indexf2])
     
     return a_final, f_final
 
